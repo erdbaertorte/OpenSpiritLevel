@@ -719,7 +719,9 @@ void ledBlink(int times=1, int on_duration=150, int off_duration=150)
 
 void setup()
 {
+#ifdef  USE_SERIAL_OUTPUT
 	Serial.begin(115200);
+#endif
 	Wire.begin(SDA_PIN, SCL_PIN);
 	mpu.initialize();
 #ifdef  USE_SERIAL_OUTPUT
@@ -737,14 +739,18 @@ void setup()
 		File file = SPIFFS.open("/OSL.conf", "r");
 		if (!file)
 		{
+#ifdef  USE_SERIAL_OUTPUT
 			Serial.println("Failed to open config file");
+#endif
 		}
 		else
 		{
 			while(file.available())
 			{
 				String setting= file.readStringUntil('\n');
+#ifdef  USE_SERIAL_OUTPUT
 				Serial.println(setting);
+#endif
 				if (setting.startsWith("ssid="))
 				{
 					setting.remove(0, 1 + setting.indexOf("="));
@@ -770,7 +776,9 @@ void setup()
 	}
 	else
 	{
+#ifdef  USE_SERIAL_OUTPUT
 		Serial.println("OSL.conf not found");
+#endif
 	}
 	WiFi.mode(WIFI_STA);
 	WiFi.begin(ssid.c_str(), pass.c_str());
@@ -844,8 +852,10 @@ bool handleOSLAPIServer()
 		// file found at server
 		if (httpCode == HTTP_CODE_OK)
 		{
+#ifdef  USE_SERIAL_OUTPUT
 			String payload = http.getString();
 			Serial.print (payload);
+#endif
 			success = true;
 		}
 	}
