@@ -697,7 +697,7 @@ DallasTemperature ds18x20(&oneWire);
 #ifdef USE_OSL_API_SERVER
 #define OSL_API_VERSION_MAJOR 0
 #define OSL_API_VERSION_MINOR 0
-#define OSL_API_VERSION_MICRO 1
+#define OSL_API_VERSION_MICRO 2
 const String UNIT_NAME="MyWonderfulUnit";
 String OSL_SERVER_IP;
 String OSL_SERVER_PORT;
@@ -705,6 +705,10 @@ String OSL_SERVER_PORT;
 #endif
 
 #include "FS.h"
+#include <WiFiUdp.h>
+WiFiUDP ntpUDP;
+#include <NTPClient.h>
+NTPClient timeClient(ntpUDP, "de.pool.ntp.org");
 
 void ledBlink(int times=1, int on_duration=150, int off_duration=150)
 {
@@ -772,6 +776,7 @@ void setup()
 					OSL_SERVER_PORT = setting;
 				}
 			}
+			file.close();
 		}
 	}
 	else
@@ -787,20 +792,58 @@ void setup()
 	{
 		if(millis()>wait+10000)
 		{
+			SPIFFS.end();
+			mpu.setSleepEnabled(true);
 #ifdef  USE_SERIAL_OUTPUT
 			Serial.println("Connection Failed! Rebooting...");
 #endif
 			ledBlink(3,300,200);
 			ledBlink(3,800,200);
 			ledBlink(3,300,200);
-			ESP.restart();  
-			//ESP.deepSleep(5 * 60 * 1000000); 
+			//ESP.restart();
+			ESP.deepSleep(5 * 60 * 1000000); 
 			delay(100);
 		}   
 	}
+	timeClient.begin();
 #ifdef USE_OSL_API_SERVER
-	handleOSLAPIServer();
+
+	if(SPIFFS.exists("/log.txt"))
+	{
+		File file = SPIFFS.open("/log.txt", "r");
+		if (!file)
+		{
+			Serial.println("foobar");
+		}
+		else
+		{
+			while(file.available())
+			{
+				String line = file.readStringUntil('\n');
+#ifdef  USE_SERIAL_OUTPUT
+        			Serial.print("logged line: ");
+				Serial.println(line);
 #endif
+        line.trim();
+        handleOSLAPIServer(line);
+			}
+			file.close();
+			SPIFFS.remove("/log.txt");
+			if(SPIFFS.exists("/log.new"))
+			{
+				SPIFFS.rename("/log.new", "/log.txt");
+			}
+		}
+	}
+	handleOSLAPIServer("");
+#endif
+
+	delay(100);
+#ifdef  USE_SERIAL_OUTPUT
+	timeClient.update();
+	Serial.println(timeClient.getFormattedTime());
+#endif
+	SPIFFS.end();
 	mpu.setSleepEnabled(true);
 	delay(100);  
 	ESP.deepSleep(5 * 60 * 1000000);
@@ -808,36 +851,50 @@ void setup()
 }
 
 #ifdef USE_OSL_API_SERVER
-bool handleOSLAPIServer()
+bool handleOSLAPIServer( String uri)
 {
-	float incl_x, incl_y;
-	getInclination(&incl_x, &incl_y);
-	float temp = getTemperature();
-#ifdef  USE_SERIAL_OUTPUT
-	Serial.print(F("Inclination X: "));
-	Serial.print(incl_x);
-	Serial.print(F("\tInclination Y:"));
-	Serial.println(incl_y);
-#endif
 	HTTPClient http;
 	bool success = false;
-	String uri = "http://"+ OSL_SERVER_IP + ":" + OSL_SERVER_PORT;
-	uri += "/osl.php?api_version=";
-	uri += OSL_API_VERSION_MAJOR;
-	uri += ".";
-	uri += OSL_API_VERSION_MINOR;
-	uri += ".";
-	uri += OSL_API_VERSION_MICRO;
-	uri += "&unit_name=";
-	uri += UNIT_NAME; 
-	uri += "&temperature=";
-	uri += temp;
-	uri +=  "&inclination_x=";
-	uri += incl_x;
-	uri +=  "&inclination_y=";
-	uri += incl_y;  
-	uri +=  "&voltage=";
-	uri +=  analogRead(A0); 
+	bool from_logfile = false;
+	if (0 != uri.length())
+	{
+		from_logfile = true;
+	}
+	else
+	{
+		float incl_x, incl_y;
+		getInclination(&incl_x, &incl_y);
+		float temp = getTemperature();
+		timeClient.update();
+		unsigned long epoch = timeClient.getEpochTime();
+#ifdef  USE_SERIAL_OUTPUT
+		Serial.print(F("Inclination X: "));
+		Serial.print(incl_x);
+		Serial.print(F("\tInclination Y:"));
+		Serial.println(incl_y);
+		Serial.print(F("\tEpoch:"));
+		Serial.println(epoch);
+#endif
+		uri = "http://"+ OSL_SERVER_IP + ":" + OSL_SERVER_PORT;
+		uri += "/osl.php?api_version=";
+		uri += OSL_API_VERSION_MAJOR;
+		uri += ".";
+		uri += OSL_API_VERSION_MINOR;
+		uri += ".";
+		uri += OSL_API_VERSION_MICRO;
+		uri += "&unit_name=";
+		uri += UNIT_NAME; 
+		uri += "&temperature=";
+		uri += temp;
+		uri +=  "&inclination_x=";
+		uri += incl_x;
+		uri +=  "&inclination_y=";
+		uri += incl_y;  
+		uri +=  "&voltage=";
+		uri +=  analogRead(A0); 
+		uri +=  "&epoch=";
+		uri +=  epoch;
+	}
 #ifdef  USE_SERIAL_OUTPUT
 	Serial.println(uri);
 #endif  
@@ -866,6 +923,19 @@ bool handleOSLAPIServer()
 #endif
 	}
 	http.end();
+	if(!success)
+	{
+		File file =  from_logfile ? SPIFFS.open("/log.new", "a") : SPIFFS.open("/log.txt", "a");
+		if (!file)
+		{
+			Serial.println("foo");
+		}
+		else
+		{
+			file.println(uri);
+			file.close();
+		}
+	}
 	return success;
 }
 #endif //USE_OSL_API_SERVER

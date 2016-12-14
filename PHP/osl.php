@@ -10,7 +10,7 @@
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
    if(!empty($_GET["api_version"]) && !empty($_GET["unit_name"])){
-   $csvData = array($_GET["api_version"],$_GET["unit_name"],$_GET["temperature"],$_GET["inclination_x"],$_GET["inclination_y"],$_GET["voltage"],date("Ymd"),date("H:i:s"));
+   $csvData = array($_GET["api_version"],$_GET["unit_name"],$_GET["temperature"],$_GET["inclination_x"],$_GET["inclination_y"],$_GET["voltage"],$_GET["epoch"]);
    $fp = fopen("osl_data.csv","a");
    if($fp)    {  
        fputcsv($fp,$csvData);
