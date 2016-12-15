@@ -709,6 +709,8 @@ String OSL_SERVER_PORT;
 WiFiUDP ntpUDP;
 #include <NTPClient.h>
 NTPClient timeClient(ntpUDP, "de.pool.ntp.org");
+unsigned long epoch = 0;
+long RESTART_INTERVAL = 5*60;
 
 void ledBlink(int times=1, int on_duration=150, int off_duration=150)
 {
@@ -721,11 +723,17 @@ void ledBlink(int times=1, int on_duration=150, int off_duration=150)
 	}
 }
 
+
+
 void setup()
 {
 #ifdef  USE_SERIAL_OUTPUT
 	Serial.begin(115200);
+  Serial.println(" ");
+  //Serial.println(ESP.getResetReason()); 
+  //Serial.println(ESP.getResetInfo());  
 #endif
+
 	Wire.begin(SDA_PIN, SCL_PIN);
 	mpu.initialize();
 #ifdef  USE_SERIAL_OUTPUT
@@ -775,6 +783,12 @@ void setup()
 					setting.remove(0, 1 + setting.indexOf("="));
 					OSL_SERVER_PORT = setting;
 				}
+				else if (setting.startsWith("restart_interval="))
+				{
+					setting.remove(0, 1 + setting.indexOf("="));
+					setting.trim();
+					RESTART_INTERVAL = setting.toInt();
+				}
 			}
 			file.close();
 		}
@@ -785,9 +799,45 @@ void setup()
 		Serial.println("OSL.conf not found");
 #endif
 	}
+
+	// take care of failing timeservers
+	unsigned int saved_timestamp = 1356030740;
+	unsigned int saved_timestamp_correction=0;
+	if(SPIFFS.exists("/time.txt"))
+	{
+		File file = SPIFFS.open("/time.txt", "r");
+		if (!file)
+		{
+#ifdef  USE_SERIAL_OUTPUT
+			Serial.println("error reading time.txt");
+#endif
+		}
+		else
+		{
+			while(file.available())
+			{
+				String line= file.readStringUntil('\n');
+				if (line.startsWith("timestamp="))
+				{
+					line.remove(0, 1 + line.indexOf("="));
+					line.trim();
+					saved_timestamp = line.toInt();
+				}
+				else if  (line.startsWith("correction="))  
+				{
+					line.remove(0, 1 + line.indexOf("="));
+					line.trim();
+					saved_timestamp_correction = line.toInt();
+				}
+			}
+			file.close();
+		}
+	}
+
 	WiFi.mode(WIFI_STA);
 	WiFi.begin(ssid.c_str(), pass.c_str());
 	unsigned long wait=millis();
+
 	while (WiFi.waitForConnectResult() != WL_CONNECTED) 
 	{
 		if(millis()>wait+10000)
@@ -800,20 +850,40 @@ void setup()
 			ledBlink(3,300,200);
 			ledBlink(3,800,200);
 			ledBlink(3,300,200);
-			//ESP.restart();
-			ESP.deepSleep(5 * 60 * 1000000); 
-			delay(100);
-		}   
+			break;
+		}
 	}
 	timeClient.begin();
 #ifdef USE_OSL_API_SERVER
+	timeClient.update();
+	epoch = timeClient.getEpochTime();
+	if (epoch < saved_timestamp-saved_timestamp_correction) // we can't tell if the ESP woke up by deepsleep timer or reset button
+	{							// so take the last successfully retrieved timestamp as reference
+		unsigned long guesstimate_time = RESTART_INTERVAL + (millis()/1000);
+		epoch = saved_timestamp + guesstimate_time;
+		saved_timestamp_correction += guesstimate_time;
+	}
+	else
+	{
+		saved_timestamp_correction = 0;
+	}
+
+#ifdef  USE_SERIAL_OUTPUT 
+	Serial.print("saving timestamp: ");
+	Serial.println(epoch);
+	Serial.print("saving correction: ");
+	Serial.println(saved_timestamp_correction);
+#endif
+	saveTimestamp(epoch, saved_timestamp_correction);//obviously this is off by the time all the rest takes
 
 	if(SPIFFS.exists("/log.txt"))
 	{
 		File file = SPIFFS.open("/log.txt", "r");
 		if (!file)
 		{
-			Serial.println("foobar");
+#ifdef  USE_SERIAL_OUTPUT
+			Serial.println("error reading log.txt");
+#endif
 		}
 		else
 		{
@@ -824,8 +894,8 @@ void setup()
         			Serial.print("logged line: ");
 				Serial.println(line);
 #endif
-        line.trim();
-        handleOSLAPIServer(line);
+				line.trim();
+				handleOSLAPIServer(line);
 			}
 			file.close();
 			SPIFFS.remove("/log.txt");
@@ -839,14 +909,14 @@ void setup()
 #endif
 
 	delay(100);
-#ifdef  USE_SERIAL_OUTPUT
-	timeClient.update();
-	Serial.println(timeClient.getFormattedTime());
-#endif
-	SPIFFS.end();
+//#ifdef  USE_SERIAL_OUTPUT
+//	timeClient.update();
+//	Serial.println(timeClient.getFormattedTime());
+//#endif
 	mpu.setSleepEnabled(true);
-	delay(100);  
-	ESP.deepSleep(5 * 60 * 1000000);
+	delay(100);
+	SPIFFS.end();
+	ESP.deepSleep(RESTART_INTERVAL * 1000000);
 	delay(100);
 }
 
@@ -865,8 +935,6 @@ bool handleOSLAPIServer( String uri)
 		float incl_x, incl_y;
 		getInclination(&incl_x, &incl_y);
 		float temp = getTemperature();
-		timeClient.update();
-		unsigned long epoch = timeClient.getEpochTime();
 #ifdef  USE_SERIAL_OUTPUT
 		Serial.print(F("Inclination X: "));
 		Serial.print(incl_x);
@@ -969,6 +1037,25 @@ void getInclination(float *incl_x, float *incl_y)
 	}
 	*incl_x = *incl_x/SAMPLE_SIZE;
 	*incl_y = *incl_y/SAMPLE_SIZE; 
+}
+
+void saveTimestamp(unsigned long timestamp, unsigned long timestamp_correction)
+{
+	File file = SPIFFS.open("/time.txt", "w");
+	if (!file)
+	{
+#ifdef  USE_SERIAL_OUTPUT
+		Serial.println("error writing time.txt");
+#endif
+	}
+	else
+	{
+		file.print("timestamp=");
+		file.println(timestamp);
+		file.print("correction=");
+		file.println(timestamp_correction);
+		file.close();
+	}
 }
 
 void loop()
