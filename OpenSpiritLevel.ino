@@ -712,19 +712,6 @@ NTPClient timeClient(ntpUDP, "de.pool.ntp.org");
 unsigned long epoch = 0;
 long RESTART_INTERVAL = 5*60;
 
-void ledBlink(int times=1, int on_duration=150, int off_duration=150)
-{
-	for(int i=times;i>0;--i )
-	{
-		digitalWrite(LED_BUILTIN,LOW);   // turn the LED on (HIGH is the voltage level)
-		delay(on_duration);                       // wait for a second
-		digitalWrite(LED_BUILTIN, HIGH);    // turn the LED off by making the voltage LOW
-		delay(off_duration); 
-	}
-}
-
-
-
 void setup()
 {
 #ifdef  USE_SERIAL_OUTPUT
@@ -766,7 +753,7 @@ void setup()
 				if (setting.startsWith("ssid="))
 				{
 					setting.remove(0, 1 + setting.indexOf("="));
-					pass = setting;
+					ssid = setting;
 				}
 				else if (setting.startsWith("pass="))
 				{
@@ -836,23 +823,13 @@ void setup()
 
 	WiFi.mode(WIFI_STA);
 	WiFi.begin(ssid.c_str(), pass.c_str());
-	unsigned long wait=millis();
+	unsigned long wait = 10000 + millis();
 
-	while (WiFi.waitForConnectResult() != WL_CONNECTED) 
+	while (wait > millis() && WiFi.waitForConnectResult() != WL_CONNECTED) 
 	{
-		if(millis()>wait+10000)
-		{
-			SPIFFS.end();
-			mpu.setSleepEnabled(true);
-#ifdef  USE_SERIAL_OUTPUT
-			Serial.println("Connection Failed! Rebooting...");
-#endif
-			ledBlink(3,300,200);
-			ledBlink(3,800,200);
-			ledBlink(3,300,200);
-			break;
-		}
+
 	}
+
 	timeClient.begin();
 #ifdef USE_OSL_API_SERVER
 	timeClient.update();
@@ -926,6 +903,7 @@ bool handleOSLAPIServer( String uri)
 	HTTPClient http;
 	bool success = false;
 	bool from_logfile = false;
+	bool settings_callback = false;
 	if (0 != uri.length())
 	{
 		from_logfile = true;
@@ -977,10 +955,50 @@ bool handleOSLAPIServer( String uri)
 		// file found at server
 		if (httpCode == HTTP_CODE_OK)
 		{
-#ifdef  USE_SERIAL_OUTPUT
+
 			String payload = http.getString();
+#ifdef  USE_SERIAL_OUTPUT
 			Serial.print (payload);
 #endif
+			int idx=0;
+			int found = payload.indexOf('\n',idx);
+			while( -1 != found)
+			{
+				String line = payload.substring(idx,found);
+				idx += 1+line.length();
+				found = -1;
+				if (payload.length() > idx )
+				{
+					found = payload.indexOf('\n',idx);
+				}
+
+				line.trim();
+				if (line.startsWith("set_interval="))
+				{
+					line.remove(0, 1 + line.indexOf("="));
+					settings_callback = updateConfigFile("restart_interval",line);
+				}
+				else if (line.startsWith("set_serverip="))
+				{
+					line.remove(0, 1 + line.indexOf("="));
+					settings_callback = updateConfigFile("serverip",line);
+				}
+				else if (line.startsWith("set_serverport="))
+				{
+					line.remove(0, 1 + line.indexOf("="));
+					settings_callback = updateConfigFile("serverport",line);
+				}
+				else if (line.startsWith("set_ssid="))
+				{
+					line.remove(0, 1 + line.indexOf("="));
+					settings_callback = updateConfigFile("ssid",line);
+				}
+				else if (line.startsWith("set_pass="))
+				{
+					line.remove(0, 1 + line.indexOf("="));
+					settings_callback = updateConfigFile("pass",line);
+				}
+			}
 			success = true;
 		}
 	}
@@ -1004,8 +1022,44 @@ bool handleOSLAPIServer( String uri)
 			file.close();
 		}
 	}
+	if (settings_callback)
+	{
+		handleOSLSettingsCallback();
+	}
+
 	return success;
 }
+
+bool handleOSLSettingsCallback()
+{
+	HTTPClient http;
+	bool success = false;
+  String uri = "http://"+ OSL_SERVER_IP + ":" + OSL_SERVER_PORT;
+	uri += "/osl_settings_callback.php";
+	http.begin(uri);
+	int httpCode = http.GET();
+
+	if (httpCode > 0)
+	{
+#ifdef  USE_SERIAL_OUTPUT
+		Serial.printf("[HTTP] GET... code: %d\n", httpCode);
+#endif
+		// file found at server
+		if (httpCode == HTTP_CODE_OK)
+		{
+			success = true;
+		}
+		else
+		{
+#ifdef  USE_SERIAL_OUTPUT
+			Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+#endif
+		}
+	}
+	http.end();
+	return success;
+}
+
 #endif //USE_OSL_API_SERVER
 
 float getTemperature()
@@ -1056,6 +1110,72 @@ void saveTimestamp(unsigned long timestamp, unsigned long timestamp_correction)
 		file.println(timestamp_correction);
 		file.close();
 	}
+}
+
+bool updateConfigFile(String setting, String value)
+{
+	bool success = false;
+	if(!SPIFFS.exists("/OSL.conf"))
+	{
+		File file = SPIFFS.open("/OSL.conf", "w");
+		if (!file)
+		{
+ #ifdef  USE_SERIAL_OUTPUT
+			Serial.println("Failed to open config file");
+ #endif
+		}
+		else
+		{
+			file.print(setting);
+			file.print("=");
+			file.println(value);
+			file.close();
+			success= true; 
+		}
+	}
+	else
+	{
+		File file = SPIFFS.open("/OSL.conf", "r");
+		if (!file)
+		{
+#ifdef  USE_SERIAL_OUTPUT
+		Serial.println("Failed to open config file");
+#endif
+		}
+		else
+		{
+			String config_file = file.readString();
+			file.close();
+
+//#ifdef  USE_SERIAL_OUTPUT
+//			Serial.println(setting);
+//#endif
+			int setting_found = config_file.lastIndexOf(setting);
+			if ( -1 != setting_found)
+			{
+				config_file.remove(setting_found,config_file.indexOf('\n',setting_found));
+			}
+			config_file += setting;
+			config_file += "=";
+			config_file += value;
+			File f = SPIFFS.open("/OSL.conf", "w");
+			if (!f)
+			{
+#ifdef  USE_SERIAL_OUTPUT
+				Serial.println("Failed to open config file");
+#endif
+			}
+			else
+			{
+				f.println(config_file);
+				f.close(); 
+				success= true; 
+			}
+
+		}
+	}
+	
+	return success;
 }
 
 void loop()
